@@ -51,6 +51,12 @@ __attribute__((format(printf, 1, 2)));
 #define USBError( LEVEL, FORMAT, ARGS... )  { kprintf( FORMAT "\n", ## ARGS ) ; }
 #endif
 
+#ifndef SUB_ABSOLUTETIME
+#if ABSOLUTETIME_SCALAR_TYPE
+#define SUB_ABSOLUTETIME(t1, t2) (*(t1) -= *(t2))
+#endif
+#endif
+
 #define GETLINKSTATE(status)	(((status >> kSSHubPortStatusLinkStateShift) & 0x0007) | ((status & 0x4000)>>14))
 
 enum 

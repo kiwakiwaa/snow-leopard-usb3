@@ -37,6 +37,18 @@
 #define USBError( LEVEL, ARGS...)	KernelDebugLogInternal( ( LEVEL ), 'USBF', ## ARGS )
 #define USBStringFromReturn( IORETURN)	(IOUSBController::_log)->stringFromReturn( IORETURN )
 
+#ifndef SUB_ABSOLUTETIME
+#if ABSOLUTETIME_SCALAR_TYPE
+#define SUB_ABSOLUTETIME(t1, t2) (*(t1) -= *(t2))
+#endif
+#endif
+
+#ifndef AbsoluteTime_to_scalar
+#if ABSOLUTETIME_SCALAR_TYPE
+#define AbsoluteTime_to_scalar(t) (*(UInt64 *)(t))
+#endif
+#endif
+
 
 // Possible Debug levels. If DEBUG_LEVEL is set to DEBUG_LEVEL_PRODUCTION, all debug logs will be 
 // stripped of the final code. 

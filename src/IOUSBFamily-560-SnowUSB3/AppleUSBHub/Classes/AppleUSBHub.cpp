@@ -57,6 +57,10 @@
 //
 //================================================================================================
 //
+#ifndef kIOMessageDeviceSignaledWakeup
+#define kIOMessageDeviceSignaledWakeup  iokit_common_msg(0x350)
+#endif
+
 #define super IOUSBHubPolicyMaker
 #define self this
 
@@ -3337,6 +3341,18 @@ AppleUSBHub::ClearPortFeature(UInt16 feature, UInt16 port)
 
     return err;
 }
+
+IOReturn
+AppleUSBHub::SetPortPower(UInt16 port, UInt32 on)
+{
+    USBLog(5, "AppleUSBHub[%p]::SetPortPower port %d %s", this, port, on ? "on" : "off");
+
+    if (on)
+        return SetPortFeature(kUSBHubPortPowerFeature, port);
+
+    return ClearPortFeature(kUSBHubPortPowerFeature, port);
+}
+
 
 IOReturn		
 AppleUSBHub::GetDeviceStatus(USBStatus *status)

@@ -3165,6 +3165,30 @@ AppleUSBHubPort::DefaultPortLinkStateChangeHandler(UInt16 changeFlags, UInt16 st
 }
 
 
+IOReturn
+AppleUSBHubPort::HandleLinkState(UInt16 changeFlags, UInt16 statusFlags)
+{
+#pragma unused (changeFlags)
+
+    UInt16 linkState = GETLINKSTATE(statusFlags);
+
+    USBLog(5, "AppleUSBHubPort[%p]::HandleLinkState - Port %d of Hub at 0x%x status 0x%04x, link state 0x%x (%s)", this, _portNum, (uint32_t)_hub->_locationID, statusFlags, linkState, _hub->LinkStateName(linkState));
+
+    if (!(statusFlags & kHubPortConnection))
+    {
+        WakeSuspendCommand(&_portPMState);
+        return kIOReturnSuccess;
+    }
+
+    if (linkState == kSSHubPortLinkStateU0 && (_resumePending || (_portPMState != usbHPPMS_active)))
+    {
+        return HandleSuspendPortHandler(0, statusFlags);
+    }
+
+    return kIOReturnSuccess;
+}
+
+
 IOReturn 
 AppleUSBHubPort::DefaultPortConfigErrChangeHandler(UInt16 changeFlags, UInt16 statusFlags)
 {
