@@ -1,0 +1,17 @@
+build/
+DerivedData/
+*.mode1v3
+*.pbxuser
+*.perspectivev3
+xcuserdata/
+.idea
+.DS_Store
+*.kext.dSYM/
+*.dSYM/
+*.o
+*.lo
+*.la
+*.a
+*.tmp
+*.log
+packaging/SnowUSB3-*/
