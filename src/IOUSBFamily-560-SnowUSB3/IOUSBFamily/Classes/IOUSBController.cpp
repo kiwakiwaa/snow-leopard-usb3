@@ -49,6 +49,7 @@
 #include <IOKit/usb/USBSpec.h>
 #include <IOKit/usb/IOUSBRootHubDevice.h>
 #include <IOKit/usb/IOUSBLog.h>
+#include <IOKit/usb/IOUSBPriv.h>
 #include <IOKit/usb/IOUSBWorkLoop.h>
 #include "USBTracepoints.h"
 #include "IOUSBFamilyInfoPlist.pch"
@@ -4757,6 +4758,108 @@ IOUSBController::IsControllerMuxed( IORegistryEntry * provider, UInt32 locationI
 	return isMuxedController;
 }
 
+
+bool 
+IOUSBController::IsPortMuxed(IORegistryEntry * provider, UInt32 portnum, UInt32 locationID, char *muxName)
+{
+    IOACPIPlatformDevice *	acpiDevice;
+	bool					isMuxed = false;
+	
+	acpiDevice = CopyACPIDevice( provider );
+	if (acpiDevice)
+	{
+		isMuxed = CheckACPIUPCTableForMuxedMethods( acpiDevice, portnum, locationID, muxName );	
+		acpiDevice->release();
+		acpiDevice = NULL;
+	}
+	
+    USBLog(5, "IOUSBController(%s)[%p]::IsPortMuxed(%s) - provider(%p) portNum(%d) locationID(0x%x)", getName(), this, isMuxed?"true":"false", provider, (int)portnum, (int)locationID);
+
+	return isMuxed;
+}
+
+bool 
+IOUSBController::CheckACPIUPCTableForMuxedMethods( IORegistryEntry * acpiDevice, UInt32 portnum, UInt32 locationID, char* muxName )
+{
+	const IORegistryPlane*	acpiPlane;
+	bool					match = false;
+	IORegistryIterator*		iter = NULL;
+	IORegistryEntry*		entry;
+	
+	USBLog(5, "IOUSBController(%s)[%p]::CheckACPIUPCTableForMuxedMethods - acpiDevice(%p) portNum(%d) locationID(0x%x)", getName(), this, acpiDevice, (int)portnum, (int)locationID);
+	if( acpiDevice )
+	{
+		acpiPlane = acpiDevice->getPlane( "IOACPIPlane" );
+		if (acpiPlane)
+		{
+			iter = IORegistryIterator::iterateOver(
+											   acpiDevice,
+											   acpiPlane,
+											   kIORegistryIterateRecursively);
+		}
+	}
+	
+	if (iter)
+	{
+		while (!match && (entry = iter->getNextObject()))
+		{			
+			if (entry->metaCast("IOACPIPlatformDevice"))
+			{
+				char	path[255];
+				int		length		= 254;
+				int		acpiDepth	= 0;
+				int		hubDepth;
+				int		hubPortACPIDepth;
+				IOACPIPlatformDevice * port = (IOACPIPlatformDevice *) entry;
+
+				hubDepth = calculateUSBDepth(locationID);
+				USBLog(5, "IOUSBController(%s)[%p]::CheckACPIUPCTableForMuxedMethods - locationID(0x%x) is at hub depth(%d)", getName(), this, (int)locationID, hubDepth);
+				hubPortACPIDepth = calculateACPIDepth(hubDepth);
+				USBLog(5, "IOUSBController(%s)[%p]::CheckACPIUPCTableForMuxedMethods - hubDepth(%d) is at PortACPIDepth(%d)", getName(), this, hubDepth, hubPortACPIDepth);
+
+                if ( (port->validateObject( "MUXS" ) == kIOReturnSuccess) && (match == false) )
+				{
+					length = 254;
+					entry->getPath(path, &length, acpiPlane);
+					acpiDepth = entry->getDepth(acpiPlane);
+					USBLog(5, "IOUSBController[%p]::CheckACPIUPCTableForMuxedMethods locationID %x hubPortACPIDepth %d @ port %d acpiDepth %d _UPC: %s ", this, (uint32_t)locationID, hubPortACPIDepth, (unsigned int)portnum, acpiDepth, path);
+					
+                    UInt32		portNumber	= strtoul(entry->getLocation(acpiPlane), NULL, 10);
+                    if ( (portNumber == portnum) && (acpiDepth == hubPortACPIDepth) )
+                    {
+                        OSObject*	theObject;
+                        IOReturn	status	= port->evaluateObject("MUXS", &theObject);
+                        if ( status == kIOReturnSuccess )
+                        {
+                            OSString*	methodName = OSDynamicCast(OSString, theObject);
+                            if( methodName )
+                            {
+                                if( (methodName->getLength()+1) <= kIOUSBMuxMethodNameLength )
+                                {
+                                    strlcpy(muxName, (char *)methodName->getCStringNoCopy(), (size_t)(methodName->getLength()+1));
+                                }
+                                match = true;
+                            }
+                            theObject->release(); 
+                        }
+                    }
+                }
+			}
+		}
+		iter->release();
+	}
+	
+	if (match == true) 
+	{
+		USBLog(5, "IOUSBController[%p]::CheckACPIUPCTableForMuxedMethods locationID %x found muxed method %s @ port %d", this, (uint32_t)locationID, muxName, (unsigned int)portnum);
+	}
+	else
+	{
+		USBLog(5, "IOUSBController[%p]::CheckACPIUPCTableForMuxedMethods locationID %x did not find a muxed method @ port %d", this, (uint32_t)locationID, (unsigned int)portnum);
+	}
+	
+	return match;
+}
 
 OSMetaClassDefineReservedUnused(IOUSBController,  19);
 

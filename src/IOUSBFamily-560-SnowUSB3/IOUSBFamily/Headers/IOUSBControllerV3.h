@@ -30,6 +30,15 @@
 #include <IOKit/usb/IOUSBControllerV2.h>
 #include <IOKit/usb/IOUSBHubDevice.h>
 
+#ifndef kIOThunderboltTunnelEndpointDeviceMIDProp
+#define kIOThunderboltTunnelEndpointDeviceMIDProp	"Tunnel Endpoint Device Model ID"
+#endif
+#ifndef kIOThunderboltTunnelEndpointDeviceVIDProp
+#define kIOThunderboltTunnelEndpointDeviceVIDProp	"Tunnel Endpoint Device Vendor ID"
+#endif
+#define kAppleThunderboltDisplay2011MID				0x8002
+#define kAppleThunderboltVID						0x0001
+
 // Constants that define the different power states in the setPowerState call
 enum
 {

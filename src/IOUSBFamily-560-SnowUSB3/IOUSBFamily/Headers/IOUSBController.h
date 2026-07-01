@@ -1115,12 +1115,14 @@ protected:
 	bool							IsPortInternal( IORegistryEntry * provider, UInt32 portnum, UInt32 locationID );
     bool                            GetInternalHubErrataBits(IORegistryEntry* provider, UInt32 portnum, UInt32 locationID, UInt32 *errataBits);
     bool                            IsControllerMuxed( IORegistryEntry * provider, UInt32 locationID );
+	bool							IsPortMuxed( IORegistryEntry * provider, UInt32 portnum, UInt32 locationID, char *muxName );
 	UInt8							GetControllerSpeed() { return (_expansionData ? _expansionData->_controllerSpeed : 255); }
 	
 private:
 	bool							HasExpressCard( IORegistryEntry * acpiDevice, UInt32 * portnum );
 	bool							CheckACPIUPCTable( IORegistryEntry * acpiDevice, UInt32 portnum, UInt32 locationID );
     bool                            CheckACPIUPCTableForInternalHubErrataBits( IORegistryEntry* acpiDevice, UInt32 portnum, UInt32 locationID, UInt32* errataBits );
+	bool							CheckACPIUPCTableForMuxedMethods( IORegistryEntry * acpiDevice, UInt32 portnum, UInt32 locationID, char* muxName );
 	int 							calculateUSBDepth(UInt32 locationID);
 	int 							calculateACPIDepth(int hubUSBDepth);
 };

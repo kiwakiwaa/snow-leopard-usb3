@@ -2396,6 +2396,234 @@ IOUSBControllerV3::GetBandwidthAvailableForDevice(IOUSBDevice *forDevice,  UInt3
     return ret;
 }
 
+UInt32			
+IOUSBControllerV3::GetErrataBits(UInt16 vendorID, UInt16 deviceID, UInt16 revisionID )
+{
+	UInt32	errataBits = IOUSBController::GetErrataBits(vendorID, deviceID, revisionID);
+	
+	OSBoolean *				tunnelledProp = NULL;
+	OSData *				thunderboltModelIDProp = NULL;
+    OSData *                thunderboltVendorIDProp = NULL;
+    IOService *				parent = _device;
+
+	if (_device)
+	{
+		// We should figure out how to differentiate between the PCIe slot on a Dr. B and the 
+		// motherboards chips on the same platform, but for now they will all fail
+		tunnelledProp = OSDynamicCast(OSBoolean, _device->getProperty(kIOPCITunnelledKey));
+		if (tunnelledProp && tunnelledProp->isTrue())
+		{
+			int		retries = 10;
+			
+			_onThunderbolt = true;
+			
+            // 10186556 - when running tunneled, go ahead and set rMBS for the lifetime of this controller
+            requireMaxBusStall(25000);
+			while (!isInactive() && retries--)
+            {
+                while  (parent != NULL)
+                {
+                    OSObject            *thunderboltModelIDObj;
+                    OSObject            *thunderboltVendorIDObj;
+                    IORegistryEntry     *nextParent;
+                    
+                    thunderboltModelIDObj = parent->copyProperty(kIOThunderboltTunnelEndpointDeviceMIDProp);
+                    thunderboltVendorIDObj = parent->copyProperty(kIOThunderboltTunnelEndpointDeviceVIDProp);
+                    
+                    thunderboltModelIDProp = OSDynamicCast(OSData, thunderboltModelIDObj);
+                    thunderboltVendorIDProp = OSDynamicCast(OSData, thunderboltVendorIDObj);
+                    
+                    if (thunderboltModelIDProp && thunderboltVendorIDProp)
+                    {
+                        // we found what we were looking for. We will break out of this while loop and will release the two objects
+                        // after we discover what is in them (although we release them under their new casted types)
+                        // first release the registry entry that we found them in, unless it is us (which it shouldn't be)
+                        if (parent != _device)
+                            parent->release();
+                        break;
+                    }
+                    
+                    // these releases would be for the cases where we found one object but not the other, or if one or 
+                    // both of them existed but was not the correct type (OSData)
+                    if (thunderboltModelIDObj)
+                    {
+                        thunderboltModelIDProp = NULL;
+                        thunderboltModelIDObj->release();
+                    }
+                    
+                    if (thunderboltVendorIDObj)
+                    {
+                        thunderboltVendorIDProp = NULL;
+                        thunderboltVendorIDObj->release();
+                    }
+                    
+                    // get the next registry entry up the tree. we use copyParent so that we have a reference, in case
+                    // an entry goes away while we are looking - which could happen since TBolt can be unplugged
+					nextParent = parent->copyParentEntry(gIOServicePlane);
+                    
+                    // we are done with the old registry entry at this point
+                    if (parent != _device)
+                        parent->release();
+                    
+                    // copy the new parent to the iVar (making sure it is the correct type, which it better be
+                    parent = OSDynamicCast(IOService, nextParent);
+                    if ((parent == NULL) && (nextParent != NULL))
+                    {
+                        // this would be exceedingly strange
+                        nextParent->release();
+                    }
+                }
+                
+                // if they both were found, then we break out of the retry loop as well (we still own a reference to each of them)
+                if (thunderboltModelIDProp && thunderboltVendorIDProp)
+                    break;
+                
+                // we didn't find a node with both.. sleep for 1 second and try again. this happens often with the TBolt display
+                // not that parent will be NULL at this point so we don't need to release it
+                IOSleep(1000);                                                          // wait up to 10 seconds for this to occur
+                parent = _device;                                                       // start over
+            }
+            
+            if (!isInactive())
+            {
+                if (thunderboltModelIDProp && thunderboltVendorIDProp)
+                {
+                    _thunderboltModelID = *(UInt32*)thunderboltModelIDProp->getBytesNoCopy();
+                    _thunderboltVendorID = *(UInt32*)thunderboltVendorIDProp->getBytesNoCopy();
+                }
+                else
+                {
+                    // if we didn't get the model ID, then assume it is the 2011 display
+                    _thunderboltModelID = kAppleThunderboltDisplay2011MID;
+                    _thunderboltVendorID = kAppleThunderboltVID;
+                }
+
+                // save the model ID in case someone else (i.e. Audio) wants to use it
+                setProperty(kIOThunderboltTunnelEndpointDeviceMIDProp, _thunderboltModelID, 32);
+                setProperty(kIOThunderboltTunnelEndpointDeviceVIDProp, _thunderboltVendorID, 32);
+#if DEBUG_LEVEL != DEBUG_LEVEL_PRODUCTION
+                setProperty("Tbolt Model ID retries", retries, 32);
+#endif
+            }
+            
+            // we need to do these two releases whether we are inactive or not
+            if (thunderboltModelIDProp)
+                thunderboltModelIDProp->release();
+            
+            if (thunderboltVendorIDProp)
+                thunderboltVendorIDProp->release();
+		}
+		
+		if (_onThunderbolt && (_thunderboltModelID == kAppleThunderboltDisplay2011MID) && (_thunderboltVendorID == kAppleThunderboltVID))
+		{
+			if (!(gUSBStackDebugFlags & kUSBForceCompanionControllersMask))
+			{
+				USBLog(5,"IOUSBControllerV3[%p]::GetErrataBits  found PCI-Thunderbolt property, adding the errata", this);
+				errataBits |= kErrataDontUseCompanionController;
+			}
+			
+			// mark the root hub port as having port 1 captive
+			if (_device->getProperty(kAppleInternalUSBDevice) == NULL)
+				_device->setProperty(kAppleInternalUSBDevice, (unsigned long long)2, 8);
+
+			// make sure we are assumed to be a built in controller
+			if (_device->getProperty("built-in") == NULL)
+				_device->setProperty("built-in", (unsigned long long)0, 8);
+			
+			if (errataBits & kErrataDisablePCIeLinkOnSleep)
+			{
+				OSObject *				aProperty = NULL;
+				IOService *				parent = _device;
+				IOPCIDevice *			highestPCIDevice = NULL;
+				IOPCIDevice *			tempPCIDevice = NULL;
+                IORegistryEntry *       nextParent = NULL;
+				
+				while (  parent != NULL )
+				{
+					// We need to chase up the tree looking for the root complex, which will have the PCI-Thunderbolt node in it
+					aProperty = parent->copyProperty("PCI-Thunderbolt");
+					
+					// if we found it and we have recorded a highest PCI bridge between us and there, then add the disable property
+					if ( OSDynamicCast( OSNumber, aProperty) != NULL )
+					{						
+						// if we have an IOPCIDevice in our upstream which is the same vendorID as the controller, then we mark it
+						if (highestPCIDevice)
+                        {
+							highestPCIDevice->setProperty(kIOPMPCISleepResetKey, kOSBooleanTrue);
+                            highestPCIDevice->release();
+                            highestPCIDevice = NULL;
+                        }
+						
+                        // release the property since we are breaking out of the loop
+                        aProperty->release();
+                        
+                        // release the parent iVar as long as it is not my actual parent (which does not have an extra retain at this point)
+                        if (parent != _device)
+                            parent->release();
+                        
+						break;
+					}
+					
+                    if (aProperty)
+                    {
+                        // exceedingly rare - would only happen if the property existed but was not an OSNumber
+                        aProperty->release();
+                        aProperty = NULL;
+                    }
+                    
+					// while going up the tree, look for any IOPCIDevice (really a PCIe bridge) with the same
+					// vendorID as the USB Host Controller. As we find them, remember the highest one, which is the
+					// Pericom upstream bridge
+					nextParent = parent->copyParentEntry(gIOServicePlane);
+                    
+                    // now that I have the next one, I can release the old (if it isn't me)
+                    if (parent != _device)
+                        parent->release();
+                    
+                    parent = OSDynamicCast(IOService, nextParent);
+                    
+                    if ((parent == NULL) && (nextParent != NULL))
+                    {
+                        // this would be exceedingly strange
+                        nextParent->release();
+                    }
+                    
+					tempPCIDevice = OSDynamicCast(IOPCIDevice, parent);
+                    
+                    // it would not be unusual for the following check to fail
+					if (tempPCIDevice)
+					{
+                        OSObject    *vendObj;
+						OSData		*vendProp;
+						UInt32		tempVend;
+						
+						// get this chips vendID, deviceID, revisionID
+						vendObj     = tempPCIDevice->copyProperty( "vendor-id" );
+						vendProp     = OSDynamicCast(OSData, vendObj);
+						if (vendProp)
+						{
+							tempVend = *((UInt32 *) vendProp->getBytesNoCopy());
+							if (tempVend == vendorID)
+                            {
+                                if (highestPCIDevice)
+                                {
+                                    // this is normal.. we will usually find 2 before we get where we are going
+                                    highestPCIDevice->release();
+                                }
+								highestPCIDevice = tempPCIDevice;
+                                highestPCIDevice->retain();
+                            }
+						}
+                        if (vendObj)
+                            vendObj->release();
+					}
+				}
+			}
+		}
+	}
+	return errataBits;
+}
+
 OSMetaClassDefineReservedUsed(IOUSBControllerV3,  0);
 OSMetaClassDefineReservedUsed(IOUSBControllerV3,  1);
 
