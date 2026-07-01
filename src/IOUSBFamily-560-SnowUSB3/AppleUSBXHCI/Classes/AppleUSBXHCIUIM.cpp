@@ -14,6 +14,7 @@
 #include <IOKit/usb/IOUSBRootHubDevice.h>
 #include <IOKit/usb/IOUSBHubPolicyMaker.h>
 #include <IOKit/usb/IOUSBControllerV3.h>
+#include <IOKit/usb/IOUSBPriv.h>
 #include <IOKit/IOTimerEventSource.h>
 
 #include "AppleUSBXHCIUIM.h"
@@ -51,6 +52,11 @@ void kprintf(const char *format, ...) __attribute__((format(printf, 1, 2)));
 
 // Make this bigger temporarily while we fix the event ring overflows.
 #define kXHCISoftwareEventRingBufferSize		(20 * kXHCIHardwareEventRingBufferSize)
+
+// Present in Apple's later internal tree, absent from this OSS drop.
+#ifndef kErrataSWAssistXHCIIdle
+#define kErrataSWAssistXHCIIdle					0
+#endif
 
 //================================================================================================
 //
@@ -157,7 +163,8 @@ static ErrataListEntry  errataList[] = {
     {0x8086, 0x1e31, 0, 0xffff,	kXHCIErrataPPT | kXHCIErrataPPTMux | kXHCIErrata_EnableAutoCompliance | kErrataSWAssistXHCIIdle | kXHCIErrata_ParkRing},	// Intel Panther Point
     {0x1b21, 0, 0, 0xffff,	kXHCIErrata_ASMedia},   // ASMedia XHCI
 	{0x1b73, 0,	0, 0xffff, kXHCIErrata_FrescoLogic},// Fresco Logic
-	{0x1b73, 0x1100, 0, 16, kXHCIErrata_FL1100_Ax},	// Fresco Logic FL1100-Ax
+	{0x1b73, 0x1100, 0, 15, kXHCIErrata_FL1100_Ax | kXHCIErrata_ParkRing},	// Fresco Logic FL1100-Ax
+	{0x1b73, 0x1100, 16, 0xffff, kXHCIErrata_FL1100_Ax | kXHCIErrata_ParkRing},	// Fresco Logic FL1100
 	{0x1b6f, 0x7052, 1, 0xffff, kXHCIErrata_Etron7052}
 };
 
@@ -188,7 +195,57 @@ UInt32 AppleUSBXHCI::GetErrataBits(UInt16 vendorID, UInt16 deviceID, UInt16 revi
         requireMaxBusStall(kXHCIIsochMaxBusStall);
     }
 	
-    return errata;
+	return errata;
+}
+
+IOReturn AppleUSBXHCI::FL1100Tricks(int choice)
+{
+	UInt32				value;
+	volatile UInt32		*reg;
+	
+	switch (choice)
+	{
+		case 1:
+			if (FL1100Tricks(4) != kIOReturnSuccess)
+			{
+				return kIOReturnNoDevice;
+			}
+			return FL1100Tricks(3);
+			
+		case 2:
+			reg = (volatile UInt32 *)((volatile UInt8 *)_pXHCICapRegisters + 0x80C0);
+			value = Read32Reg(reg);
+			if (_lostRegisterAccess)
+			{
+				return kIOReturnNoDevice;
+			}
+			Write32Reg(reg, value & ~0x4000U);
+			break;
+			
+		case 3:
+			reg = (volatile UInt32 *)((volatile UInt8 *)_pXHCICapRegisters + 0x80EC);
+			value = Read32Reg(reg);
+			if (_lostRegisterAccess)
+			{
+				return kIOReturnNoDevice;
+			}
+			value &= ~0x7000U;
+			value |= 0x5000U;
+			Write32Reg(reg, value & 0xEFFFFFFFU);
+			break;
+			
+		case 4:
+			reg = (volatile UInt32 *)((volatile UInt8 *)_pXHCICapRegisters + 0x8094);
+			value = Read32Reg(reg);
+			if (_lostRegisterAccess)
+			{
+				return kIOReturnNoDevice;
+			}
+			Write32Reg(reg, value | 0x800000U);
+			break;
+	}
+	
+	return kIOReturnSuccess;
 }
 
 UInt8 AppleUSBXHCI::Read8Reg(volatile UInt8 *addr)
@@ -4193,7 +4250,15 @@ IOReturn AppleUSBXHCI::UIMInitialize(IOService * provider)
         {
             break;
         }
- 
+		if( (_errataBits & kXHCIErrata_FL1100_Ax) != 0 )
+		{
+			status = FL1100Tricks(2);
+			if( status != kIOReturnSuccess )
+			{
+				break;
+			}
+		}
+
 		_rootHubNumPorts = (Read32Reg(&_pXHCICapRegisters->HCSParams1) & kXHCINumPortsMask) >> kXHCINumPortsShift;
 		if(_lostRegisterAccess)
 		{
@@ -9367,7 +9432,15 @@ AppleUSBXHCI::ResetController()
 	volatile UInt32 val = 0;
 	volatile UInt32 * addr;
 
-	
+	if( (_errataBits & kXHCIErrata_FL1100_Ax) != 0 )
+	{
+		status = FL1100Tricks(3);
+		if( status != kIOReturnSuccess )
+		{
+			return status;
+		}
+	}
+
 	// Issue HCRST
 	Write32Reg(&_pXHCIRegisters->USBCMD, kXHCICMDHCReset); // set the reset bit
 	IOSync();
@@ -9401,8 +9474,12 @@ AppleUSBXHCI::ResetController()
 			break;
 		}
 	}
+		
+	if( (status == kIOReturnSuccess) && ((_errataBits & kXHCIErrata_FL1100_Ax) != 0) )
+	{
+		status = FL1100Tricks(4);
+	}
 
-	
     return status;
 }
 
@@ -10571,4 +10648,3 @@ AppleUSBXHCI::GetNewDMACommand()
 	USBLog(7, "AppleUSBXHCI[%p]::GetNewDMACommand - creating %d bit IODMACommand", this, _AC64 ? 64 : 32);
 	return IODMACommand::withSpecification(kIODMACommandOutputHost64, _AC64 ? 64 : 32, 0);
 }
-

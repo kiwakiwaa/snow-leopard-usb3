@@ -649,7 +649,8 @@ private:
 	IOReturn	HCSelect ( UInt8 port, UInt8 controllerType );
     IOReturn	HCSelectWithMethod ( char *muxMethod );
 	bool		DiscoverMuxedPorts();
-    IOReturn    ResetController();
+	IOReturn    ResetController();
+	IOReturn	FL1100Tricks(int choice);
 	void        EnableXHCIPorts();
 	bool        HasMuxedPorts();
     IOReturn    QuiesceAllEndpoints ();
