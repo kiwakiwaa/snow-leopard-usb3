@@ -193,7 +193,15 @@ AppleUSBXHCI::RestartControllerFromReset(void)
             USBLog(2, "AppleUSBXHCI[%p]::RestartControllerFromReset ResetController returned 0x%x", this, status);
             return status;
         }
-        		
+		if( (_errataBits & kXHCIErrata_FL1100_Ax) != 0 )
+		{
+			status = FL1100Tricks(2);
+			if( status != kIOReturnSuccess )
+			{
+				return status;
+			}
+		}
+
         UInt8    portIndex = 0, deviceIndex = 0;
 
 		// If the WRC is set, clear it
@@ -495,20 +503,28 @@ AppleUSBXHCI::RestoreControllerStateFromSleep(void)
     int slot, endp;
 	UInt32 CMD, STS, count=0;
     UInt32 portIndex;
-	volatile UInt32 val = 0;
-	volatile UInt32 * addr;
+	bool needControllerRestart = false;
+	bool needRootHubRestart = false;
 	
     USBLog(2, "AppleUSBXHCI[%p]::RestoreControllerStateFromSleep _myPowerState: %d _stateSaved %d", this, (uint32_t)_myPowerState, _stateSaved);
 	PrintRuntimeRegs();
 
-    UInt32		sts = Read32Reg(&_pXHCIRegisters->USBSTS);
-	if (_lostRegisterAccess)
-	{
-		return kIOReturnNoDevice;
-	}
+	    UInt32		sts = Read32Reg(&_pXHCIRegisters->USBSTS);
+		if (_lostRegisterAccess)
+		{
+			return kIOReturnNoDevice;
+		}
+		if( (_errataBits & kXHCIErrata_FL1100_Ax) != 0 )
+		{
+			IOReturn status = FL1100Tricks(1);
+			if( status != kIOReturnSuccess )
+			{
+				return status;
+			}
+		}
+		
 	
-
-	
+		
 	// At this point, interrupts are disabled, and we are waking up. If the Port Change Detect bit is active
 	// then it is likely that we are responsible for the system issuing the wakeup
 	if (sts & kXHCIPCD)
@@ -536,7 +552,17 @@ AppleUSBXHCI::RestoreControllerStateFromSleep(void)
 				{
 					IOLog("USB (%s):Port %d on bus 0x%x connected or disconnected: portSC(0x%x)\n", _rootHubDevice ? _rootHubDevice->getName() : "XHCI", (int)port+1, (uint32_t)_busNumber, (uint32_t)portSC);
 					USBLog(5, "AppleUSBXHCI[%p]::RestoreControllerStateFromSleep  Port %d on bus 0x%x (%s)- connected or disconnected, calling EnsureUsability()", this, (int)port+1, (uint32_t)_busNumber, _rootHubDevice ? _rootHubDevice->getName() : "XHCI");
-					EnsureUsability();
+					if (((_errataBits & kXHCIErrata_FL1100_Ax) != 0) &&
+						(portSC & kXHCIPortSC_CCS) &&
+						(((portSC & kXHCIPortSC_LinkState_Mask) >> kXHCIPortSC_LinkState_Shift) == kXHCIPortSC_PLS_Polling))
+					{
+						needControllerRestart = true;
+						needRootHubRestart = true;
+					}
+					else
+					{
+						EnsureUsability();
+					}
 				}
 			}
 			else if ( ((portSC & kXHCIPortSC_LinkState_Mask) >> kXHCIPortSC_LinkState_Shift) == kXHCIPortSC_PLS_Resume)
@@ -575,6 +601,25 @@ AppleUSBXHCI::RestoreControllerStateFromSleep(void)
 			// In EHCI, we do an "else" check here for a port that is enabled but not suspended.  
             // However, it seems that in XHCI when we get here we are already in resume, so a
 			// check for being in PLS of U3 does not make sense
+		}
+	}
+
+	if (needControllerRestart)
+	{
+		IOReturn status;
+
+		_stateSaved = false;
+
+		status = ResetControllerState();
+		if (status != kIOReturnSuccess)
+		{
+			return status;
+		}
+
+		status = RestartControllerFromReset();
+		if (status != kIOReturnSuccess)
+		{
+			return status;
 		}
 	}
     
@@ -670,27 +715,55 @@ AppleUSBXHCI::RestoreControllerStateFromSleep(void)
 	}
 	
     DisableComplianceMode();
+
+	if (needRootHubRestart)
+	{
+		IOUSBHubPolicyMaker *policyMaker = NULL;
+
+		if (_rootHubDevice != NULL)
+		{
+			policyMaker = _rootHubDevice->GetPolicyMaker();
+			if (policyMaker != NULL)
+			{
+				policyMaker->changePowerStateTo(kIOUSBHubPowerStateRestart);
+				policyMaker->EnsureUsability();
+			}
+		}
+
+		if (_rootHubDeviceSS != NULL)
+		{
+			policyMaker = _rootHubDeviceSS->GetPolicyMaker();
+			if (policyMaker != NULL)
+			{
+				policyMaker->changePowerStateTo(kIOUSBHubPowerStateRestart);
+				policyMaker->EnsureUsability();
+			}
+		}
+	}
         
     // Restart all endpoints
-    for(slot = 0; slot<_numDeviceSlots; slot++)
+    if (!needRootHubRestart)
 	{
-		if(_slots[slot].buffer != NULL)
+		for(slot = 0; slot<_numDeviceSlots; slot++)
 		{
-			for(endp = 1; endp<kXHCI_Num_Contexts; endp++)
+			if(_slots[slot].buffer != NULL)
 			{
-				XHCIRing *ring;
-				ring = GetRing(slot, endp, 0);
-				if( (ring != NULL) && (ring->TRBBuffer != NULL) )
+				for(endp = 1; endp<kXHCI_Num_Contexts; endp++)
 				{
-                    if(IsStreamsEndpoint(slot, endp))
+					XHCIRing *ring;
+					ring = GetRing(slot, endp, 0);
+					if( (ring != NULL) && (ring->TRBBuffer != NULL) )
 					{
-                        USBLog(5, "AppleUSBXHCI[%p]::RestoreControllerStateFromSleep - restart stream ep=%d", this, endp);
-						RestartStreams(slot, endp, 0);
-					}
-					else
-					{
-                        USBLog(5, "AppleUSBXHCI[%p]::RestoreControllerStateFromSleep - slot=%d doorbell4ep=%d", this, slot, endp);
-                        StartEndpoint(slot, endp);
+						if(IsStreamsEndpoint(slot, endp))
+						{
+							USBLog(5, "AppleUSBXHCI[%p]::RestoreControllerStateFromSleep - restart stream ep=%d", this, endp);
+							RestartStreams(slot, endp, 0);
+						}
+						else
+						{
+							USBLog(5, "AppleUSBXHCI[%p]::RestoreControllerStateFromSleep - slot=%d doorbell4ep=%d", this, slot, endp);
+							StartEndpoint(slot, endp);
+						}
 					}
 				}
 			}
