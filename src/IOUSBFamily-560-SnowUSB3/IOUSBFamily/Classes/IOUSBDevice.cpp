@@ -2313,7 +2313,9 @@ IOUSBDevice::SetConfiguration(IOService *forClient, UInt8 configNumber, bool sta
 			// For UAS interfaces, we might need to actually instantiate a different altSetting, if it exists.  To do this we will (1) check to see if we have a kMSCProtocolBulkOnly MSC interface, and if so then (2) Find the next interface and
 			// check whether it is a kMSCProtocolUSBAttachedSCSI MSC interface with the same bInterfaceNumber and different bAlternateSetting (i.e. just an alternate setting and NOT a new interface)
 			//
-			if ( ((gUSBStackDebugFlags & kUSBUASControlMask) == 0) &&
+			const bool uasStorageStackAvailable = false;
+			if ( uasStorageStackAvailable &&
+				 ((gUSBStackDebugFlags & kUSBUASControlMask) == 0) &&
 				 (intfDesc->bInterfaceClass == kUSBMassStorageClass) && 
 				 (intfDesc->bInterfaceSubClass == kUSBMassStorageSCSISubClass) && 
 				 (intfDesc->bInterfaceProtocol == kMSCProtocolBulkOnly)
